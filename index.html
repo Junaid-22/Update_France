@@ -17,6 +17,9 @@
     <!-- Add Bootstrap JS and CSS -->
     <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.bundle.min.js"></script>
+    <!-- PDF Export Libraries -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -685,14 +688,18 @@
                     </div>
                 </div>
 
-                <div class="btn-group d-flex flex-column flex-md-row">
-                    <button class="btn btn-secondary mb-2 mb-md-0" onclick="resetFilters()">
-                        <i class="fas fa-redo"></i> Reset Filters
-                    </button>
-                    <button class="btn btn-primary" onclick="exportCSV()">
-                        <i class="fas fa-download"></i> Export CSV
-                    </button>
-                </div>
+                <!-- Line 332 se shuru hone wale code mein changes -->
+<div class="btn-group d-flex flex-wrap">
+    <button class="btn btn-secondary" onclick="resetFilters()" style="min-width: 90px;">
+        <i class="fas fa-redo"></i> Reset
+    </button>
+    <button class="btn btn-primary" onclick="exportCSV()" style="min-width: 90px;">
+        <i class="fas fa-download"></i> CSV
+    </button>
+    <button class="btn btn-danger" onclick="exportPDF()" id="pdfExportBtn" style="min-width: 90px;">
+        <i class="fas fa-file-pdf"></i> PDF
+    </button>
+</div>
             </div>
         </div>
 
@@ -1385,7 +1392,440 @@ function drawMap(data) {
             link.click();
             document.body.removeChild(link);
         }
+        // ========== ULTIMATE FIX: HTML DIVS REPLACEMENT (HIGH QUALITY) ==========
+function exportPDF() {
+    const pdfExportBtn = document.getElementById('pdfExportBtn');
+    const originalHTML = pdfExportBtn.innerHTML;
+    
+    pdfExportBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating HQ PDF...';
+    pdfExportBtn.disabled = true;
+    
+    // Step 1: Convert SVG points to HTML divs (html2canvas inke sath acha kaam karta hai)
+    convertPointsToHTMLDivs().then(() => {
+        // Step 2: Hide controls
+        const controls = document.querySelector('.map-controls');
+        const legend = document.getElementById('categoryLegend');
+        const originalControls = controls ? controls.style.display : '';
+        const originalLegend = legend ? legend.style.display : '';
+        
+        if (controls) controls.style.display = 'none';
+        if (legend) legend.style.display = 'none';
+        
+        // Step 3: Wait for rendering
+        setTimeout(() => {
+            // Step 4: Capture with HIGH QUALITY settings
+            html2canvas(document.getElementById('map'), {
+                scale: 3, // HIGH RESOLUTION (3x)
+                useCORS: true,
+                allowTaint: true,
+                backgroundColor: '#0f172a',
+                logging: false,
+                imageTimeout: 10000, // More time for images
+                removeContainer: true,
+                onclone: function(clonedDoc) {
+                    // Improve rendering quality in clone
+                    const clonedMap = clonedDoc.getElementById('map');
+                    if (clonedMap) {
+                        clonedMap.style.imageRendering = 'crisp-edges';
+                        
+                        // Force high quality for all images
+                        const images = clonedMap.querySelectorAll('img');
+                        images.forEach(img => {
+                            img.style.imageRendering = 'high-quality';
+                        });
+                    }
+                }
+            }).then(canvas => {
+                console.log('High quality canvas:', canvas.width, 'x', canvas.height);
+                
+                // Step 5: Restore controls
+                if (controls) controls.style.display = originalControls;
+                if (legend) legend.style.display = originalLegend;
+                
+                // Step 6: Restore original points IMMEDIATELY
+                restoreOriginalPoints();
+                
+                // Step 7: Create HIGH QUALITY PDF
+                createHighQualityPDF(canvas);
+                
+                // Step 8: Reset button
+                pdfExportBtn.innerHTML = originalHTML;
+                pdfExportBtn.disabled = false;
+                
+            }).catch(error => {
+                console.error('HQ capture failed:', error);
+                
+                // Restore on error
+                if (controls) controls.style.display = originalControls;
+                if (legend) legend.style.display = originalLegend;
+                restoreOriginalPoints();
+                
+                pdfExportBtn.innerHTML = originalHTML;
+                pdfExportBtn.disabled = false;
+                alert('High quality capture failed. Trying medium quality...');
+                exportPDFMedium();
+            });
+        }, 400); // Slightly longer wait for HQ rendering
+        
+    }).catch(error => {
+        console.error('Point conversion failed:', error);
+        pdfExportBtn.innerHTML = originalHTML;
+        pdfExportBtn.disabled = false;
+    });
+}
 
+// Convert Leaflet circle markers to HTML divs (SAME FUNCTION, NO CHANGES)
+function convertPointsToHTMLDivs() {
+    return new Promise((resolve) => {
+        // Store original points
+        window.originalPoints = [];
+        
+        if (!geoLayer) {
+            resolve();
+            return;
+        }
+        
+        // Create a container for HTML points
+        const htmlPointsContainer = document.createElement('div');
+        htmlPointsContainer.id = 'html-points-container';
+        htmlPointsContainer.style.cssText = `
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1000;
+        `;
+        
+        document.getElementById('map').appendChild(htmlPointsContainer);
+        
+        // Get current map bounds and size
+        const mapBounds = map.getBounds();
+        const mapSize = map.getSize();
+        
+        // Function to convert lat/lng to pixel coordinates
+        function latLngToPixel(latlng) {
+            const point = map.latLngToContainerPoint(latlng);
+            return {
+                x: point.x,
+                y: point.y
+            };
+        }
+        
+        // Convert each point
+        let convertedCount = 0;
+        geoLayer.eachLayer(layer => {
+            if (layer instanceof L.CircleMarker) {
+                const latlng = layer.getLatLng();
+                const options = layer.options;
+                
+                // Store original
+                window.originalPoints.push({
+                    layer: layer,
+                    latlng: latlng,
+                    options: options,
+                    popup: layer.getPopup() ? layer.getPopup().getContent() : null
+                });
+                
+                // Hide original
+                layer.getElement().style.display = 'none';
+                
+                // Get pixel position
+                const pixelPos = latLngToPixel(latlng);
+                
+                // Create HTML div for this point (HIGHER QUALITY DIVS)
+                const pointDiv = document.createElement('div');
+                pointDiv.className = 'html-point';
+                
+                // HIGH QUALITY STYLING
+                const radius = options.radius * 1.5; // Slightly larger for better quality
+                pointDiv.style.cssText = `
+                    position: absolute;
+                    left: ${pixelPos.x - radius}px;
+                    top: ${pixelPos.y - radius}px;
+                    width: ${radius * 2}px;
+                    height: ${radius * 2}px;
+                    background-color: ${options.fillColor};
+                    border-radius: 50%;
+                    border: 3px solid white;
+                    box-shadow: 0 0 8px rgba(0,0,0,0.7);
+                    opacity: ${options.fillOpacity || 0.9};
+                    cursor: pointer;
+                    image-rendering: crisp-edges;
+                    -webkit-font-smoothing: antialiased;
+                `;
+                
+                // Add hover effect
+                pointDiv.onmouseenter = () => {
+                    pointDiv.style.transform = 'scale(1.3)';
+                    pointDiv.style.zIndex = '1001';
+                    pointDiv.style.boxShadow = '0 0 12px rgba(0,0,0,0.9)';
+                };
+                pointDiv.onmouseleave = () => {
+                    pointDiv.style.transform = 'scale(1)';
+                    pointDiv.style.zIndex = '1000';
+                    pointDiv.style.boxShadow = '0 0 8px rgba(0,0,0,0.7)';
+                };
+                
+                htmlPointsContainer.appendChild(pointDiv);
+                convertedCount++;
+            }
+        });
+        
+        console.log(`Converted ${convertedCount} points to HTML divs (HQ)`);
+        
+        // Force reflow
+        setTimeout(() => {
+            htmlPointsContainer.offsetHeight;
+            resolve();
+        }, 150);
+    });
+}
+
+// Restore original points (SAME FUNCTION, NO CHANGES)
+function restoreOriginalPoints() {
+    // Remove HTML points container
+    const htmlContainer = document.getElementById('html-points-container');
+    if (htmlContainer) {
+        htmlContainer.remove();
+    }
+    
+    // Show original points
+    if (window.originalPoints && geoLayer) {
+        window.originalPoints.forEach(original => {
+            const element = original.layer.getElement();
+            if (element) {
+                element.style.display = '';
+            }
+        });
+        
+        // Clear stored points
+        window.originalPoints = [];
+    }
+    
+    // Force map redraw
+    if (map) {
+        map.invalidateSize();
+    }
+}
+
+// Create HIGH QUALITY PDF (MODIFIED FOR BETTER QUALITY)
+function createHighQualityPDF(canvas) {
+    try {
+        const jsPDFLib = window.jspdf ? window.jspdf.jsPDF : (typeof jspdf !== 'undefined' ? jspdf.jsPDF : null);
+        
+        if (!jsPDFLib) {
+            // Download as HIGH QUALITY image
+            const link = document.createElement('a');
+            link.download = `Map_HQ_${new Date().getTime()}.png`;
+            // PNG for lossless quality
+            link.href = canvas.toDataURL('image/png', 1.0);
+            link.click();
+            return;
+        }
+        
+        // Create PDF with better settings
+        const pdf = new jsPDFLib('landscape', 'mm', 'a4');
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        
+        // Calculate dimensions - fit to page with good margins
+        const imgWidth = pageWidth - 30; // 15mm margins on each side
+        const imgHeight = (canvas.height * imgWidth) / canvas.width;
+        
+        // Center vertically
+        let yPos = 15;
+        if (imgHeight < pageHeight - 30) {
+            yPos = (pageHeight - imgHeight) / 2;
+        }
+        
+        // Add image with MAXIMUM quality
+        const imageData = canvas.toDataURL('image/jpeg', 1.0); // 100% JPEG quality
+        pdf.addImage(imageData, 'JPEG', 15, yPos, imgWidth, imgHeight);
+        
+        // Add minimal footer (smaller, less intrusive)
+        pdf.setFontSize(8);
+        pdf.setTextColor(120, 120, 120);
+        const footerY = yPos + imgHeight + 8;
+        pdf.text(`Generated: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`, 
+                 pageWidth/2, footerY, {align: 'center'});
+        
+        // Save with timestamp
+        const timestamp = new Date().toISOString().split('T')[0];
+        pdf.save(`Reseller_Map_HQ_${timestamp}.pdf`);
+        
+        console.log('High quality PDF created successfully');
+        
+    } catch (error) {
+        console.error('HQ PDF creation error:', error);
+        // Fallback to high quality image
+        const link = document.createElement('a');
+        link.download = `Map_HQ_${new Date().getTime()}.png`;
+        link.href = canvas.toDataURL('image/png', 1.0);
+        link.click();
+    }
+}
+
+// ========== MEDIUM QUALITY FALLBACK ==========
+function exportPDFMedium() {
+    const pdfExportBtn = document.getElementById('pdfExportBtn');
+    const originalHTML = pdfExportBtn.innerHTML;
+    
+    pdfExportBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating medium quality PDF...';
+    pdfExportBtn.disabled = true;
+    
+    // Use simple conversion with medium quality
+    convertPointsToHTMLDivs().then(() => {
+        const controls = document.querySelector('.map-controls');
+        const legend = document.getElementById('categoryLegend');
+        const originalControls = controls ? controls.style.display : '';
+        const originalLegend = legend ? legend.style.display : '';
+        
+        if (controls) controls.style.display = 'none';
+        if (legend) legend.style.display = 'none';
+        
+        setTimeout(() => {
+            html2canvas(document.getElementById('map'), {
+                scale: 2, // Medium resolution
+                useCORS: true,
+                backgroundColor: '#0f172a',
+                logging: false
+            }).then(canvas => {
+                if (controls) controls.style.display = originalControls;
+                if (legend) legend.style.display = originalLegend;
+                restoreOriginalPoints();
+                
+                // Medium quality PDF
+                const jsPDFLib = window.jspdf ? window.jspdf.jsPDF : null;
+                if (jsPDFLib) {
+                    const pdf = new jsPDFLib('landscape', 'mm', 'a4');
+                    const imgWidth = 270;
+                    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+                    
+                    pdf.addImage(canvas.toDataURL('image/jpeg', 0.9), 'JPEG', 10, 10, imgWidth, imgHeight);
+                    pdf.save('Map_Medium.pdf');
+                } else {
+                    const link = document.createElement('a');
+                    link.download = 'Map_Medium.png';
+                    link.href = canvas.toDataURL('image/png', 0.95);
+                    link.click();
+                }
+                
+                pdfExportBtn.innerHTML = originalHTML;
+                pdfExportBtn.disabled = false;
+                
+            }).catch(error => {
+                console.error('Medium failed:', error);
+                if (controls) controls.style.display = originalControls;
+                if (legend) legend.style.display = originalLegend;
+                restoreOriginalPoints();
+                pdfExportBtn.innerHTML = originalHTML;
+                pdfExportBtn.disabled = false;
+                exportPDFSimple(); // Try simple version
+            });
+        }, 300);
+        
+    }).catch(error => {
+        console.error('Conversion failed:', error);
+        pdfExportBtn.innerHTML = originalHTML;
+        pdfExportBtn.disabled = false;
+        exportPDFSimple();
+    });
+}
+
+// ========== SIMPLE VERSION - NO CONVERSION (SAME AS BEFORE) ==========
+function exportPDFSimple() {
+    const pdfExportBtn = document.getElementById('pdfExportBtn');
+    const originalHTML = pdfExportBtn.innerHTML;
+    
+    pdfExportBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Taking snapshot...';
+    pdfExportBtn.disabled = true;
+    
+    // Method: Take screenshot of ENTIRE window, then crop to map
+    setTimeout(() => {
+        // Full page screenshot
+        html2canvas(document.documentElement, {
+            scale: 1,
+            useCORS: true,
+            logging: false
+        }).then(fullCanvas => {
+            // Get map position
+            const mapElement = document.getElementById('map');
+            const rect = mapElement.getBoundingClientRect();
+            
+            // Crop to map area
+            const mapCanvas = document.createElement('canvas');
+            mapCanvas.width = rect.width;
+            mapCanvas.height = rect.height;
+            const ctx = mapCanvas.getContext('2d');
+            
+            ctx.drawImage(
+                fullCanvas,
+                rect.left, rect.top,
+                rect.width, rect.height,
+                0, 0,
+                rect.width, rect.height
+            );
+            
+            // Create PDF
+            const jsPDFLib = window.jspdf ? window.jspdf.jsPDF : null;
+            if (jsPDFLib) {
+                const pdf = new jsPDFLib('landscape', 'mm', 'a4');
+                const imgWidth = 270;
+                const imgHeight = (mapCanvas.height * imgWidth) / mapCanvas.width;
+                
+                pdf.addImage(mapCanvas.toDataURL('image/jpeg'), 'JPEG', 10, 10, imgWidth, imgHeight);
+                pdf.save('Map_Snapshot.pdf');
+            } else {
+                const link = document.createElement('a');
+                link.download = 'Map_Snapshot.png';
+                link.href = mapCanvas.toDataURL('image/png');
+                link.click();
+            }
+            
+            // Reset button
+            pdfExportBtn.innerHTML = originalHTML;
+            pdfExportBtn.disabled = false;
+            
+        }).catch(error => {
+            console.error('Error:', error);
+            pdfExportBtn.innerHTML = originalHTML;
+            pdfExportBtn.disabled = false;
+            alert('Failed. Please use: Alt+PrintScreen, then paste in Paint and save.');
+        });
+    }, 500);
+}
+
+// ========== MANUAL METHOD BUTTON (SAME AS BEFORE) ==========
+function showManualGuide() {
+    const guide = `
+        <div style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+                    background: white; color: black; padding: 20px; border-radius: 10px; 
+                    box-shadow: 0 0 20px rgba(0,0,0,0.5); z-index: 9999; max-width: 500px;">
+            <h3>💡 Manual Screenshot Guide (100% Accurate)</h3>
+            <p><strong>Points kabhi shift nahi honge:</strong></p>
+            <ol>
+                <li>Map ko exact desired position par set karo</li>
+                <li><strong>Windows:</strong> <kbd>Alt</kbd> + <kbd>Print Screen</kbd> dabao</li>
+                <li>Paint kholo (Start > Paint)</li>
+                <li><kbd>Ctrl</kbd> + <kbd>V</kbd> dabao (paste)</li>
+                <li>File > Save As > PNG</li>
+                <li><strong>Mac:</strong> <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>4</kbd>, then <kbd>Space</kbd>, then map par click</li>
+            </ol>
+            <p><em>Yeh 100% accurate hai kyunki browser khud screenshot leta hai.</em></p>
+            <button onclick="this.parentElement.remove()" 
+                    style="background: #dc2626; color: white; border: none; padding: 10px 20px; 
+                           border-radius: 5px; cursor: pointer; margin-top: 10px;">
+                Close
+            </button>
+        </div>
+    `;
+    
+    const div = document.createElement('div');
+    div.innerHTML = guide;
+    document.body.appendChild(div);
+}
         // ========== INTERACTION FUNCTIONS ==========
         function applyFilters() {
             if (geoData) {
@@ -1482,4 +1922,3 @@ function drawMap(data) {
 
 
 </html>
-
